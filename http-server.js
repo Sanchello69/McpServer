@@ -10,37 +10,60 @@ const PORT = 3000;
 app.use(cors());
 app.use(express.json());
 
-// Store active MCP server process and session
-let mcpProcess = null;
+// Store active MCP server processes and sessions
+let coinCapProcess = null;
+let fileServerProcess = null;
 let sessionId = null;
 
-// Start MCP server process
-function startMcpServer() {
-  if (mcpProcess) {
+// Start CoinCap MCP server process
+function startCoinCapServer() {
+  if (coinCapProcess) {
     return;
   }
 
-  mcpProcess = spawn("node", ["index.js"], {
+  coinCapProcess = spawn("node", ["index.js"], {
     cwd: import.meta.dirname,
   });
 
-  mcpProcess.stderr.on("data", (data) => {
-    console.log("[MCP Server]", data.toString());
+  coinCapProcess.stderr.on("data", (data) => {
+    console.log("[CoinCap Server]", data.toString());
   });
 
-  mcpProcess.on("close", (code) => {
-    console.log(`MCP server process exited with code ${code}`);
-    mcpProcess = null;
+  coinCapProcess.on("close", (code) => {
+    console.log(`CoinCap server process exited with code ${code}`);
+    coinCapProcess = null;
   });
 
-  console.log("MCP server process started");
+  console.log("CoinCap MCP server process started");
 }
 
-// Send request to MCP server and get response
-async function sendToMcp(request) {
+// Start File MCP server process
+function startFileServer() {
+  if (fileServerProcess) {
+    return;
+  }
+
+  fileServerProcess = spawn("node", ["file-server.js"], {
+    cwd: import.meta.dirname,
+  });
+
+  fileServerProcess.stderr.on("data", (data) => {
+    console.log("[File Server]", data.toString());
+  });
+
+  fileServerProcess.on("close", (code) => {
+    console.log(`File server process exited with code ${code}`);
+    fileServerProcess = null;
+  });
+
+  console.log("File MCP server process started");
+}
+
+// Send request to specific MCP server and get response
+async function sendToMcp(mcpProcess, serverName, request) {
   return new Promise((resolve, reject) => {
     if (!mcpProcess) {
-      reject(new Error("MCP server not running"));
+      reject(new Error(`${serverName} not running`));
       return;
     }
 
@@ -78,12 +101,12 @@ async function sendToMcp(request) {
   });
 }
 
-// Initialize MCP connection
-app.post("/mcp/initialize", async (req, res) => {
+// Initialize CoinCap MCP connection
+app.post("/mcp/coincap/initialize", async (req, res) => {
   try {
-    startMcpServer();
+    startCoinCapServer();
 
-    const response = await sendToMcp({
+    const response = await sendToMcp(coinCapProcess, "CoinCap", {
       jsonrpc: "2.0",
       id: req.body.id || "init-1",
       method: "initialize",
@@ -112,10 +135,44 @@ app.post("/mcp/initialize", async (req, res) => {
   }
 });
 
-// List available tools
-app.post("/mcp/tools/list", async (req, res) => {
+// Initialize File MCP connection
+app.post("/mcp/file/initialize", async (req, res) => {
   try {
-    const response = await sendToMcp({
+    startFileServer();
+
+    const response = await sendToMcp(fileServerProcess, "File", {
+      jsonrpc: "2.0",
+      id: req.body.id || "init-1",
+      method: "initialize",
+      params: req.body.params || {
+        protocolVersion: "2024-11-05",
+        capabilities: {},
+        clientInfo: {
+          name: "MyAiModelsBot",
+          version: "1.0.0",
+        },
+      },
+    });
+
+    sessionId = "session-" + Date.now();
+    res.json(response);
+  } catch (error) {
+    console.error("Initialize error:", error);
+    res.status(500).json({
+      jsonrpc: "2.0",
+      id: req.body.id,
+      error: {
+        code: -32603,
+        message: error.message,
+      },
+    });
+  }
+});
+
+// List available tools from CoinCap server
+app.post("/mcp/coincap/tools/list", async (req, res) => {
+  try {
+    const response = await sendToMcp(coinCapProcess, "CoinCap", {
       jsonrpc: "2.0",
       id: req.body.id || "list-tools-1",
       method: "tools/list",
@@ -136,10 +193,58 @@ app.post("/mcp/tools/list", async (req, res) => {
   }
 });
 
-// Call a tool
-app.post("/mcp/tools/call", async (req, res) => {
+// List available tools from File server
+app.post("/mcp/file/tools/list", async (req, res) => {
   try {
-    const response = await sendToMcp({
+    const response = await sendToMcp(fileServerProcess, "File", {
+      jsonrpc: "2.0",
+      id: req.body.id || "list-tools-1",
+      method: "tools/list",
+      params: req.body.params || {},
+    });
+
+    res.json(response);
+  } catch (error) {
+    console.error("List tools error:", error);
+    res.status(500).json({
+      jsonrpc: "2.0",
+      id: req.body.id,
+      error: {
+        code: -32603,
+        message: error.message,
+      },
+    });
+  }
+});
+
+// Call a tool on CoinCap server
+app.post("/mcp/coincap/tools/call", async (req, res) => {
+  try {
+    const response = await sendToMcp(coinCapProcess, "CoinCap", {
+      jsonrpc: "2.0",
+      id: req.body.id || "call-tool-1",
+      method: "tools/call",
+      params: req.body.params,
+    });
+
+    res.json(response);
+  } catch (error) {
+    console.error("Call tool error:", error);
+    res.status(500).json({
+      jsonrpc: "2.0",
+      id: req.body.id,
+      error: {
+        code: -32603,
+        message: error.message,
+      },
+    });
+  }
+});
+
+// Call a tool on File server
+app.post("/mcp/file/tools/call", async (req, res) => {
+  try {
+    const response = await sendToMcp(fileServerProcess, "File", {
       jsonrpc: "2.0",
       id: req.body.id || "call-tool-1",
       method: "tools/call",
@@ -163,7 +268,7 @@ app.post("/mcp/tools/call", async (req, res) => {
 // Get Bitcoin price (convenience endpoint)
 app.get("/bitcoin/price", async (req, res) => {
   try {
-    const response = await sendToMcp({
+    const response = await sendToMcp(coinCapProcess, "CoinCap", {
       jsonrpc: "2.0",
       id: "get-bitcoin-" + Date.now(),
       method: "tools/call",
@@ -201,21 +306,26 @@ app.get("/bitcoin/price", async (req, res) => {
 app.get("/health", (req, res) => {
   res.json({
     status: "ok",
-    mcpServerRunning: mcpProcess !== null,
+    coinCapServerRunning: coinCapProcess !== null,
+    fileServerRunning: fileServerProcess !== null,
     sessionId,
   });
 });
 
 // Cleanup on exit
 process.on("SIGINT", () => {
-  if (mcpProcess) {
-    mcpProcess.kill();
+  if (coinCapProcess) {
+    coinCapProcess.kill();
+  }
+  if (fileServerProcess) {
+    fileServerProcess.kill();
   }
   process.exit(0);
 });
 
 app.listen(PORT, () => {
   console.log(`HTTP wrapper server running on http://localhost:${PORT}`);
-  console.log("Starting MCP server...");
-  startMcpServer();
+  console.log("Starting MCP servers...");
+  startCoinCapServer();
+  startFileServer();
 });
