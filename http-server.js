@@ -13,6 +13,7 @@ app.use(express.json());
 // Store active MCP server processes and sessions
 let coinCapProcess = null;
 let fileServerProcess = null;
+let mobileServerProcess = null;
 let sessionId = null;
 
 // Start CoinCap MCP server process
@@ -57,6 +58,28 @@ function startFileServer() {
   });
 
   console.log("File MCP server process started");
+}
+
+// Start Mobile MCP server process
+function startMobileServer() {
+  if (mobileServerProcess) {
+    return;
+  }
+
+  mobileServerProcess = spawn("node", ["mobile-mcp-server/lib/index.js"], {
+    cwd: import.meta.dirname,
+  });
+
+  mobileServerProcess.stderr.on("data", (data) => {
+    console.log("[Mobile Server]", data.toString());
+  });
+
+  mobileServerProcess.on("close", (code) => {
+    console.log(`Mobile server process exited with code ${code}`);
+    mobileServerProcess = null;
+  });
+
+  console.log("Mobile MCP server process started");
 }
 
 // Send request to specific MCP server and get response
@@ -265,6 +288,88 @@ app.post("/mcp/file/tools/call", async (req, res) => {
   }
 });
 
+// Initialize Mobile MCP connection
+app.post("/mcp/mobile/initialize", async (req, res) => {
+  try {
+    startMobileServer();
+
+    const response = await sendToMcp(mobileServerProcess, "Mobile", {
+      jsonrpc: "2.0",
+      id: req.body.id || "init-1",
+      method: "initialize",
+      params: req.body.params || {
+        protocolVersion: "2024-11-05",
+        capabilities: {},
+        clientInfo: {
+          name: "MyAiModelsBot",
+          version: "1.0.0",
+        },
+      },
+    });
+
+    sessionId = "session-" + Date.now();
+    res.json(response);
+  } catch (error) {
+    console.error("Initialize error:", error);
+    res.status(500).json({
+      jsonrpc: "2.0",
+      id: req.body.id,
+      error: {
+        code: -32603,
+        message: error.message,
+      },
+    });
+  }
+});
+
+// List available tools from Mobile server
+app.post("/mcp/mobile/tools/list", async (req, res) => {
+  try {
+    const response = await sendToMcp(mobileServerProcess, "Mobile", {
+      jsonrpc: "2.0",
+      id: req.body.id || "list-tools-1",
+      method: "tools/list",
+      params: req.body.params || {},
+    });
+
+    res.json(response);
+  } catch (error) {
+    console.error("List tools error:", error);
+    res.status(500).json({
+      jsonrpc: "2.0",
+      id: req.body.id,
+      error: {
+        code: -32603,
+        message: error.message,
+      },
+    });
+  }
+});
+
+// Call a tool on Mobile server
+app.post("/mcp/mobile/tools/call", async (req, res) => {
+  try {
+    const response = await sendToMcp(mobileServerProcess, "Mobile", {
+      jsonrpc: "2.0",
+      id: req.body.id || "call-tool-1",
+      method: "tools/call",
+      params: req.body.params,
+    });
+
+    res.json(response);
+  } catch (error) {
+    console.error("Call tool error:", error);
+    res.status(500).json({
+      jsonrpc: "2.0",
+      id: req.body.id,
+      error: {
+        code: -32603,
+        message: error.message,
+      },
+    });
+  }
+});
+
 // Get Bitcoin price (convenience endpoint)
 app.get("/bitcoin/price", async (req, res) => {
   try {
@@ -308,6 +413,7 @@ app.get("/health", (req, res) => {
     status: "ok",
     coinCapServerRunning: coinCapProcess !== null,
     fileServerRunning: fileServerProcess !== null,
+    mobileServerRunning: mobileServerProcess !== null,
     sessionId,
   });
 });
@@ -320,12 +426,17 @@ process.on("SIGINT", () => {
   if (fileServerProcess) {
     fileServerProcess.kill();
   }
+  if (mobileServerProcess) {
+    mobileServerProcess.kill();
+  }
   process.exit(0);
 });
 
-app.listen(PORT, () => {
-  console.log(`HTTP wrapper server running on http://localhost:${PORT}`);
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`HTTP wrapper server running on http://0.0.0.0:${PORT}`);
+  console.log(`Accessible from local network at http://192.168.1.12:${PORT}`);
   console.log("Starting MCP servers...");
   startCoinCapServer();
   startFileServer();
+  startMobileServer();
 });
